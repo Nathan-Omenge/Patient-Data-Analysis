@@ -1,0 +1,750 @@
+---
+title: "Assignment 2"
+author: 
+  - name: "Misati Nyambane"
+    id: "670145"
+  - name: "Nathan Orang'o"
+    id: "670637"
+  - name: "Sylvia Njane"
+    id: "669203"
+  - name: "Sharlyne Kiven"
+    id: "ID004"
+  - name: "Rita Magu"
+    id: "6668940"
+  - name: "Abdullahi Sundus"
+    id: "ID006"
+  - name: "Kimani Jessica"
+    id: "ID006" 
+output: pdf_document
+date: "`r format(Sys.Date(), '%B %d, %Y')`"
+---
+
+## Libraries
+
+The following libraries will be needed in order to work with the data. The importance of each library is as detailed below:
+
+-   `dplyr`: The manipulate the data set.
+-   `fitdistrplus`: To fit different distributions to the data set.
+-   `readxl`: To read the `.xlsx` file that the data is in
+-   `lubridate`: To handle date operations and manipulations.
+-   `naniar`: To check if any values are missing displaying a visual representation of the location where there are missing values.
+-   `ggplot2`:
+-   `plotly`:
+
+```{r}
+library(dplyr)
+library(fitdistrplus)
+library(readxl)
+library(lubridate)
+library(naniar)
+library(ggplot2)
+library(plotly)
+```
+
+## Part a
+
+### Data Normalization
+
+Firstly, the data is imported using the `read_excel` function. Then a quick snapshot using `head` is done.
+
+```{r}
+patient_data <- read_excel("~/Library/CloudStorage/Dropbox/My Mac (Nathans-MacBook-Air.local)/Downloads/Final Patient Data Group Work (1).xlsx")
+
+head(patient_data)
+```
+
+Soon after `vis_miss` is employed to visually pinpoint the points in the data frame where data is missing.
+
+```{r}
+vis_miss(patient_data)
+```
+
+## Part b
+
+A function for fitting distributions is created alongside a list of distributions that will be used. This eliminates redundancy and makes the code modular.
+
+```{r}
+fit_distributions <- function(column, distributions, subset_name) {
+  
+  for (dist in distributions) {
+    if (dist == "beta") {
+      # Ensure data is within [0, 1] for beta distribution
+      if (all(column >= 0 & column <= 1)) {
+        fit_result <- try(fitdist(column, dist), silent = TRUE)
+      } else {
+        # Apply min-max normalization if data is not in [0, 1]
+        normalized_column <- (column - min(column)) / (max(column) - min(column))
+        fit_result <- try(fitdist(normalized_column, dist), silent = TRUE)
+      }
+    } else {
+      # Fit other distributions as usual
+      fit_result <- try(fitdist(column, dist), silent = TRUE)
+    }
+    
+    # Dynamically create variable name: e.g., fit_male_patients_beta
+    variable_name <- paste0("fit_", subset_name, "_", dist)
+    
+    # Assign the fit result to the dynamically created variable
+    assign(variable_name, fit_result, envir = .GlobalEnv)
+  }
+}
+
+distributions_to_check <- c("norm", "lnorm", "gamma", "weibull", "exp", 
+                            "cauchy", "logis", "unif")
+```
+
+Moreover, a function to find the model with the best AIC and BIC is as follows:
+
+```{r}
+find_best_aic_bic <- function(fits_list) {
+
+  best_aic_model <- NULL
+  best_bic_model <- NULL
+  min_aic <- Inf
+  min_bic <- Inf
+
+  for (name in names(fits_list)) {
+    fit <- fits_list[[name]]
+    
+    # Calculate AIC and BIC
+    current_aic <- AIC(fit)
+    current_bic <- BIC(fit)
+
+    if (current_aic < min_aic) {
+      min_aic <- current_aic
+      best_aic_model <- name
+    }
+
+    if (current_bic < min_bic) {
+      min_bic <- current_bic
+      best_bic_model <- name
+    }
+  }
+  
+  # Return a list containing the results
+  return(list(
+    best_aic_model = best_aic_model,
+    best_bic_model = best_bic_model,
+    min_aic = min_aic,
+    min_bic = min_bic
+  ))
+}
+```
+
+```{r}
+get_negative_rows <- function(data, column_names = NULL) {
+  # If column names are provided, check only those columns
+  if (!is.null(column_names)) {
+    negative_rows <- data %>%
+      filter(if_any(all_of(column_names), ~ . < 0))  # Check for negative values in specified columns
+  } else {
+    # If no columns are specified, check all numeric columns
+    negative_rows <- data %>%
+      filter(if_any(where(is.numeric), ~ . < 0))  # Check for negative values in all numeric columns
+  }
+  
+  return(negative_rows)
+}
+```
+
+### Data Imputation
+
+For each column a different method of handling missing values is employed:
+
+1.  For the sex of the patient *mode imputation* is used where the most common value is used to replace any missing values for the sex of the patient.
+
+```{r}
+mode_impute <- function(x) {
+  uniq <- unique(x)
+  uniq[which.max(tabulate(match(x, uniq)))]
+}
+
+patient_data <- patient_data %>%
+  mutate(Sex_Patient = if_else(is.na(Sex_Patient), mode_impute(Sex_Patient), Sex_Patient))
+```
+
+2.  For the Age of the patient *median imputation* is used where the middle value of all the ages is used to replace any missing values.
+
+```{r}
+patient_data <- patient_data %>%
+  mutate(Age = if_else(is.na(Age), median(Age, na.rm = TRUE), Age))
+```
+
+3.  For the date someone checked in and checked out at the hospital *mode imputation* is used where the most common value for each is used to replace missing values in each column respectively. The validity of the date is also checked and if the date someone checked in is after the date they checked out then the date was inputted incorrectly and the values are swapped.
+
+```{r}
+patient_data <- patient_data %>%
+  mutate(Date_Started = if_else(is.na(Date_Started), mode_impute(Date_Started), Date_Started))
+```
+
+```{r}
+patient_data <- patient_data %>%
+  mutate(Date_Ended = if_else(is.na(Date_Ended), mode_impute(Date_Ended), Date_Ended))
+```
+
+```{r}
+patient_data <- patient_data %>%
+  mutate(
+    Date_Started = if_else(grepl("^\\d{2}-\\d{2}-\\d{3}$", Date_Started) | is.na(Date_Started), mode_impute(Date_Started), Date_Started),
+    Date_Ended = if_else(grepl("^\\d{2}-\\d{2}-\\d{3}$", Date_Ended) | is.na(Date_Ended), mode_impute(Date_Ended), Date_Ended)
+  )
+```
+
+```{r}
+patient_data <- patient_data %>%
+  mutate(
+    Date_Started = as.Date(Date_Started, format = "%d-%m-%Y"),
+    Date_Ended = as.Date(Date_Ended, format = "%d-%m-%Y")
+  )
+
+patient_data <- patient_data %>%
+  mutate(
+    temp = Date_Started,
+    Date_Started = if_else(Date_Started > Date_Ended, Date_Ended, Date_Started),
+    Date_Ended = if_else(temp > Date_Ended, temp, Date_Ended)
+  ) %>%
+  mutate(temp = NULL)
+```
+
+### Data Computation
+
+The number of days is then computed from the date someone checked in and the date they checked out.
+
+```{r}
+patient_data <- patient_data %>%
+  mutate(
+    Days = as.numeric(Date_Ended - Date_Started),  # Calculate the difference in days
+    
+    # If Days is negative, recalculate using Date_Started - Date_Ended
+    Days = if_else(Days < 0, as.numeric(Date_Started - Date_Ended), Days)
+  )
+```
+
+### Data Validation
+
+It is confirmed that all the days are greater than zero and that there are no missing values in the entire data set.
+
+```{r}
+vis_miss(patient_data)
+```
+
+```{r}
+get_negative_rows(patient_data, column_names = c("Days"))
+```
+
+## Part c
+
+### Data Splitting
+
+The various different data sets needed are subsetted.
+
+```{r}
+male_patients <- patient_data %>%
+  filter(Sex_Patient == "Male")
+
+female_patients <- patient_data %>%
+  filter(Sex_Patient == "Female")
+
+non_resident_patients <- patient_data %>%
+  filter(Facility_Type == "Non Resident")
+
+resident_patients <- patient_data %>%
+  filter(Facility_Type == "Resident")
+```
+
+### Data Analysis
+
+The distributions are fitted for each data set.
+
+```{r warning=FALSE}
+data_sets <- list(
+  all_patients = patient_data,
+  male_patients = male_patients,
+  female_patients = female_patients,
+  non_resident_patients = non_resident_patients,
+  resident_patients = resident_patients
+)
+
+for (data_name in names(data_sets)) {
+  data_subset <- data_sets[[data_name]]
+
+  column_to_fit <- data_subset$Days
+
+  fit_distributions(column_to_fit, distributions_to_check, data_name)
+}
+```
+
+```{r}
+fit_variables <- ls(pattern = "^fit_")
+
+fit_variables
+```
+
+```{r}
+for (var in fit_variables) {
+  cat("Summary of", var, ":\n")
+  fit_result <- try(get(var), silent = TRUE)
+  
+  if (inherits(fit_result, "try-error")) {
+    cat("Error in retrieving", var, ": Object not found or is a function.\n\n")
+  } else if (is.function(fit_result)) {
+    cat("Error: Object", var, "is a function, not a fit result.\n\n")
+  } else {
+    print(summary(fit_result))
+  }
+  
+  cat("\n")  # Add a newline for readability between summaries
+}
+```
+
+#### All Patients
+
+Finally, we confirm our visual decision using the BIC and AIC of the models.
+
+```{r}
+fits_all_patients_list <- list(
+  cauchy = fit_all_patients_cauchy,
+  exp = fit_all_patients_exp,
+  gamma = fit_all_patients_gamma,
+  lnorm = fit_all_patients_lnorm,
+  logis = fit_all_patients_logis,
+  norm = fit_all_patients_norm,
+  unif = fit_all_patients_unif,
+  weibull = fit_all_patients_weibull
+)
+
+best_all_patients_models <- find_best_aic_bic(fits_all_patients_list)
+
+cat("Best model by AIC:", best_all_patients_models$best_aic_model, "with AIC =", best_all_patients_models$min_aic, "\n")
+cat("Best model by BIC:", best_all_patients_models$best_bic_model, "with BIC =", best_all_patients_models$min_bic, "\n")
+```
+
+#### Male Patients
+
+```{r}
+actual_plot <- ggplot(male_patients, aes(x = Days)) +
+  geom_histogram(aes(y = after_stat(density)), bins = 10, fill = '#8F17FF', alpha = 0.5, color = "black") +
+  geom_density(color = '#1736FF', linewidth = 1.5) +
+  labs(title = 'Actual Ogive', x = "Number of Days at Hospital",y='Density')
+actual_plot
+```
+
+```{r}
+cauchy_loc_m <- fit_male_patients_cauchy$estimate["location"]
+cauchy_scale_m <- fit_male_patients_cauchy$estimate["scale"]
+
+exp_rate_m <- fit_male_patients_exp$estimate["rate"]
+
+gamma_shape_m <- fit_male_patients_gamma$estimate["shape"]
+gamma_rate_m <- fit_male_patients_gamma$estimate["rate"]
+
+lognorm_meanlog_m <- fit_male_patients_lnorm$estimate["meanlog"]
+lognorm_sdlog_m <- fit_male_patients_lnorm$estimate["sdlog"]
+
+logis_location_m <- fit_male_patients_logis$estimate["location"]
+logis_scale_m <- fit_male_patients_logis$estimate["scale"]
+
+norm_mean_m <- fit_male_patients_norm$estimate["mean"]
+norm_sd_m <- fit_male_patients_norm$estimate["sd"]
+
+weibull_shape_m <- fit_male_patients_weibull$estimate["shape"]
+weibull_scale_m <- fit_male_patients_weibull$estimate["scale"]
+
+x_males <- seq(min(male_patients$Days), max(male_patients$Days), length.out = 100)
+
+# Calculate density values for each distribution over the new x_males range
+cauchy_density <- dcauchy(x_males, location = fit_male_patients_cauchy$estimate[1], scale = fit_male_patients_cauchy$estimate[2])
+exp_density <- dexp(x_males, rate = fit_male_patients_exp$estimate[1])
+gamma_density <- dgamma(x_males, shape = fit_male_patients_gamma$estimate[1], rate = fit_male_patients_gamma$estimate[2])
+lognorm_density <- dlnorm(x_males, meanlog = fit_male_patients_lnorm$estimate[1], sdlog = fit_male_patients_lnorm$estimate[2])
+logis_density <- dlogis(x_males, location = fit_male_patients_logis$estimate[1], scale = fit_male_patients_logis$estimate[2])
+norm_density <- dnorm(x_males, mean = fit_male_patients_norm$estimate[1], sd = fit_male_patients_norm$estimate[2])
+unif_density <- dunif(x_males, min = fit_male_patients_unif$estimate[1], max = fit_male_patients_unif$estimate[2])
+weibull_density <- dweibull(x_males, shape = fit_male_patients_weibull$estimate[1], scale = fit_male_patients_weibull$estimate[2])
+
+# Create histogram
+fig_m <- plot_ly(male_patients, x = ~Days, type = 'histogram', 
+                  histnorm = 'density', binwidth = 75, 
+                  marker = list(color = 'blue', opacity = 0.6), name = 'Histogram')
+
+# Add smooth density curve
+fig_m <- fig_m %>% add_trace(x = density(male_patients$Days)$x, 
+                              y = density(male_patients$Days)$y, 
+                              type = 'scatter', mode = 'lines', 
+                              line = list(color = 'black', width = 1.5), 
+                              name = 'Density')
+
+# Add distribution curves
+fig_m <- fig_m %>% add_trace(x = x_males, y = cauchy_density, 
+                              type = 'scatter', mode = 'lines', 
+                              line = list(color = 'purple', width = 1.2), 
+                              name = 'Cauchy')
+
+fig_m <- fig_m %>% add_trace(x = x_males, y = exp_density, 
+                              type = 'scatter', mode = 'lines', 
+                              line = list(color = 'green', width = 1.2), 
+                              name = 'Exponential')
+
+fig_m <- fig_m %>% add_trace(x = x_males, y = gamma_density, 
+                              type = 'scatter', mode = 'lines', 
+                              line = list(color = 'orange', width = 1.2), 
+                              name = 'Gamma')
+
+fig_m <- fig_m %>% add_trace(x = x_males, y = lognorm_density, 
+                              type = 'scatter', mode = 'lines', 
+                              line = list(color = 'brown', width = 1.2), 
+                              name = 'Log-normal')
+
+fig_m <- fig_m %>% add_trace(x = x_males, y = logis_density,
+                         type = 'scatter', mode = 'lines',
+                         line = list(color = 'cyan', width = 1.2),
+                         name = 'Logistic')
+
+fig_m <- fig_m %>% add_trace(x = x_males, y = norm_density,
+                         type = 'scatter', mode = 'lines',
+                         line = list(color = 'red', width = 1.2),
+                         name = 'Normal')
+
+fig_m <- fig_m %>% add_trace(x = x_males, y = unif_density,
+                         type = 'scatter', mode = 'lines',
+                         line = list(color = 'pink', width = 1.2),
+                         name = 'Uniform')
+
+fig_m <- fig_m %>% add_trace(x = x_males, y = weibull_density,
+                         type = 'scatter', mode = 'lines',
+                         line = list(color = 'magenta', width = 1.2),
+                         name = 'Weibull')
+
+# Layout settings: titles, axis labels, and legend
+fig_m <- fig_m %>% layout(title = 'Histogram with Fitted Distributions for Male Patients',
+                      xaxis = list(title = 'Number of Days at Hospital',
+                                   range = c(0, NA),  # Ensure x-axis starts at 0
+                                   zeroline = TRUE),   # Ensure zero line is present
+                      yaxis = list(title = 'Density'),
+                      legend = list(title = list(text = 'Distributions')),
+                      barmode = 'overlay')
+
+fig_m
+```
+
+Finally, we confirm our visual decision using the BIC and AIC of the models.
+
+```{r}
+fits_male_patients_list <- list(
+  cauchy = fit_male_patients_cauchy,
+  exp = fit_male_patients_exp,
+  gamma = fit_male_patients_gamma,
+  lnorm = fit_male_patients_lnorm,
+  logis = fit_male_patients_logis,
+  norm = fit_male_patients_norm,
+  unif = fit_male_patients_unif,
+  weibull = fit_male_patients_weibull
+)
+
+best_male_patients_models <- find_best_aic_bic(fits_male_patients_list)
+
+cat("Best model by AIC:", best_male_patients_models$best_aic_model, "with AIC =", best_male_patients_models$min_aic, "\n")
+cat("Best model by BIC:", best_male_patients_models$best_bic_model, "with BIC =", best_male_patients_models$min_bic, "\n")
+```
+
+#### Female Patients
+
+Finally, we confirm our visual decision using the BIC and AIC of the models.
+
+```{r}
+fits_female_patients_list <- list(
+  cauchy = fit_female_patients_cauchy,
+  exp = fit_female_patients_exp,
+  gamma = fit_female_patients_gamma,
+  lnorm = fit_female_patients_lnorm,
+  logis = fit_female_patients_logis,
+  norm = fit_female_patients_norm,
+  unif = fit_female_patients_unif,
+  weibull = fit_female_patients_weibull
+)
+
+best_female_patients_models <- find_best_aic_bic(fits_female_patients_list)
+
+cat("Best model by AIC:", best_female_patients_models$best_aic_model, "with AIC =", best_female_patients_models$min_aic, "\n")
+cat("Best model by BIC:", best_female_patients_models$best_bic_model, "with BIC =", best_female_patients_models$min_bic, "\n")
+```
+
+#### Resident Patients
+#### Plotting the Histogram and Fitting Distributions
+
+```{r}
+# Filtering the data to get only the "Resident" patients
+resident_patients <- patient_data %>%
+  filter(Facility_Type == "Resident")
+
+# Extracting the number of days for Resident patients
+days_residents <- resident_patients$Days
+
+# Generating a sequence of x values for plotting density curves
+x_residents <- seq(min(days_residents), max(days_residents), length.out = 100)
+
+# Calculating densities for each distribution over the x_residents range
+# Extracting parameters from fitted distributions for the Resident patients
+
+cauchy_density <- dcauchy(x_residents, location = fit_resident_patients_cauchy$estimate[1], scale = fit_resident_patients_cauchy$estimate[2])
+exp_density <- dexp(x_residents, rate = fit_resident_patients_exp$estimate[1])
+gamma_density <- dgamma(x_residents, shape = fit_resident_patients_gamma$estimate[1], rate = fit_resident_patients_gamma$estimate[2])
+lognorm_density <- dlnorm(x_residents, meanlog = fit_resident_patients_lnorm$estimate[1], sdlog = fit_resident_patients_lnorm$estimate[2])
+logis_density <- dlogis(x_residents, location = fit_resident_patients_logis$estimate[1], scale = fit_resident_patients_logis$estimate[2])
+norm_density <- dnorm(x_residents, mean = fit_resident_patients_norm$estimate[1], sd = fit_resident_patients_norm$estimate[2])
+unif_density <- dunif(x_residents, min = min(days_residents), max = max(days_residents))
+weibull_density <- dweibull(x_residents, shape = fit_resident_patients_weibull$estimate[1], scale = fit_resident_patients_weibull$estimate[2])
+
+# Creating an interactive histogram using plotly
+fig_r <- plot_ly(resident_patients, x = ~Days, type = 'histogram', 
+                 histnorm = 'density', binwidth = 75, 
+                 marker = list(color = 'blue', opacity = 0.6), name = 'Histogram')
+
+# Adding a smooth density curve
+fig_r <- fig_r %>% add_trace(x = density(days_residents)$x, 
+                             y = density(days_residents)$y, 
+                             type = 'scatter', mode = 'lines', 
+                             line = list(color = 'black', width = 1.5), 
+                             name = 'Density')
+
+# Adding Cauchy distribution curve
+fig_r <- fig_r %>% add_trace(x = x_residents, y = cauchy_density, 
+                             type = 'scatter', mode = 'lines', 
+                             line = list(color = 'purple', width = 1.2), 
+                             name = 'Cauchy')
+
+# Adding Exponential distribution curve
+fig_r <- fig_r %>% add_trace(x = x_residents, y = exp_density, 
+                             type = 'scatter', mode = 'lines', 
+                             line = list(color = 'green', width = 1.2), 
+                             name = 'Exponential')
+
+# Adding Gamma distribution curve
+fig_r <- fig_r %>% add_trace(x = x_residents, y = gamma_density, 
+                             type = 'scatter', mode = 'lines', 
+                             line = list(color = 'orange', width = 1.2), 
+                             name = 'Gamma')
+
+# Adding Log-normal distribution curve
+fig_r <- fig_r %>% add_trace(x = x_residents, y = lognorm_density, 
+                             type = 'scatter', mode = 'lines', 
+                             line = list(color = 'brown', width = 1.2), 
+                             name = 'Log-normal')
+
+# Adding Logistic distribution curve
+fig_r <- fig_r %>% add_trace(x = x_residents, y = logis_density, 
+                             type = 'scatter', mode = 'lines', 
+                             line = list(color = 'cyan', width = 1.2), 
+                             name = 'Logistic')
+
+# Adding Normal distribution curve
+fig_r <- fig_r %>% add_trace(x = x_residents, y = norm_density, 
+                             type = 'scatter', mode = 'lines', 
+                             line = list(color = 'red', width = 1.2), 
+                             name = 'Normal')
+
+# Adding Uniform distribution curve
+fig_r <- fig_r %>% add_trace(x = x_residents, y = unif_density, 
+                             type = 'scatter', mode = 'lines', 
+                             line = list(color = 'pink', width = 1.2), 
+                             name = 'Uniform')
+
+# Adding Weibull distribution curve
+fig_r <- fig_r %>% add_trace(x = x_residents, y = weibull_density, 
+                             type = 'scatter', mode = 'lines', 
+                             line = list(color = 'magenta', width = 1.2), 
+                             name = 'Weibull')
+
+# Outlining Plot Layout settings: titles, axis labels, and legend
+fig_r <- fig_r %>% layout(title = 'Histogram with Fitted Distributions for Resident Patients',
+                          xaxis = list(title = 'Number of Days at Hospital', 
+                                       range = c(0, NA),  # Ensure x-axis starts at 0
+                                       zeroline = TRUE),   # Ensure zero line is present
+                          yaxis = list(title = 'Density'),
+                          legend = list(title = list(text = 'Distributions')),
+                          barmode = 'overlay')
+
+# Displaying the plot
+fig_r
+
+
+
+```
+
+Finally, we confirm our visual decision using the BIC and AIC of the models.
+
+```{r}
+fits_resident_patients_list <- list(
+  cauchy = fit_resident_patients_cauchy,
+  exp = fit_resident_patients_exp,
+  gamma = fit_resident_patients_gamma,
+  lnorm = fit_resident_patients_lnorm,
+  logis = fit_resident_patients_logis,
+  norm = fit_resident_patients_norm,
+  unif = fit_resident_patients_unif,
+  weibull = fit_resident_patients_weibull
+)
+
+best_resident_patients_models <- find_best_aic_bic(fits_resident_patients_list)
+
+cat("Best model by AIC:", best_resident_patients_models$best_aic_model, "with AIC =", best_resident_patients_models$min_aic, "\n")
+cat("Best model by BIC:", best_resident_patients_models$best_bic_model, "with BIC =", best_resident_patients_models$min_bic, "\n")
+```
+#### Explanation for the selected best-fit distribution
+From the BIC, the best fitting `residents` distribution is `Exponential Distribution`. This indicates that most `Resident patients` have a relatively short stay, with the likelihood of a longer stay decreasing exponentially. 
+
+This may point to a situation where most patients recover and are discharged quickly, and the few cases that extend their stay may be due to complications or more complex care requirements. 
+
+#### Possible Insights
+1. As most patient stays are short, the hospital should allocate sufficient resources for initial patient assessments and treatment (Improved Triage)
+2. Focus on high quality intensive care to prevent complications that may further patient stay. 
+3. Identifying common causes of extended patient stay and addressing them appropriately
+
+
+#### Non-resident Patients
+
+```{r warning=FALSE}
+ggplot(non_resident_patients, aes(x = Days)) +
+  geom_histogram(binwidth = 75, fill = "blue", color = "red") +
+  labs(title = 'Histogram Distribution of Days for Non Residents', 
+       x = 'Number of Days at Hospital', 
+       y = 'Number of Non Residents') +
+  xlim(0, NA)
+
+```
+
+```{r}
+# Extract parameters from fitted distributions
+cauchy_loc <- fit_non_resident_patients_cauchy$estimate["location"]
+cauchy_scale <- fit_non_resident_patients_cauchy$estimate["scale"]
+
+exp_rate <- fit_non_resident_patients_exp$estimate["rate"]
+
+gamma_shape <- fit_non_resident_patients_gamma$estimate["shape"]
+gamma_rate <- fit_non_resident_patients_gamma$estimate["rate"]
+
+lognorm_meanlog <- fit_non_resident_patients_lnorm$estimate["meanlog"]
+lognorm_sdlog <- fit_non_resident_patients_lnorm$estimate["sdlog"]
+
+logis_location <- fit_non_resident_patients_logis$estimate["location"]
+logis_scale <- fit_non_resident_patients_logis$estimate["scale"]
+
+norm_mean <- fit_non_resident_patients_norm$estimate["mean"]
+norm_sd <- fit_non_resident_patients_norm$estimate["sd"]
+
+weibull_shape <- fit_non_resident_patients_weibull$estimate["shape"]
+weibull_scale <- fit_non_resident_patients_weibull$estimate["scale"]
+
+# Generate x values for the density curves
+x_vals <- seq(min(non_resident_patients$Days), max(non_resident_patients$Days), length.out = 100)
+
+# Compute densities for each distribution
+cauchy_density <- dcauchy(x_vals, location = cauchy_loc, scale = cauchy_scale)
+exp_density <- dexp(x_vals, rate = exp_rate)
+gamma_density <- dgamma(x_vals, shape = gamma_shape, rate = gamma_rate)
+lognorm_density <- dlnorm(x_vals, meanlog = lognorm_meanlog, sdlog = lognorm_sdlog)
+logis_density <- dlogis(x_vals, location = logis_location, scale = logis_scale)
+norm_density <- dnorm(x_vals, mean = norm_mean, sd = norm_sd)
+unif_density <- dunif(x_vals, min = min(non_resident_patients$Days), max = max(non_resident_patients$Days))
+weibull_density <- dweibull(x_vals, shape = weibull_shape, scale = weibull_scale)
+
+# Create histogram
+fig_nr <- plot_ly(non_resident_patients, x = ~Days, type = 'histogram', 
+               histnorm = 'density', binwidth = 75, 
+               marker = list(color = 'blue', opacity = 0.6), name = 'Histogram')
+
+# Add smooth density curve
+fig_nr <- fig_nr %>% add_trace(x = density(non_resident_patients$Days)$x, 
+                         y = density(non_resident_patients$Days)$y, 
+                         type = 'scatter', mode = 'lines', 
+                         line = list(color = '#1736FF', width = 1.5), 
+                         name = 'Density')
+
+# Add Cauchy distribution curve
+fig_nr <- fig_nr %>% add_trace(x = x_vals, y = cauchy_density, 
+                         type = 'scatter', mode = 'lines', 
+                         line = list(color = 'purple', width = 1.2), 
+                         name = 'Cauchy')
+
+# Add Exponential distribution curve
+fig_nr <- fig_nr %>% add_trace(x = x_vals, y = exp_density, 
+                         type = 'scatter', mode = 'lines', 
+                         line = list(color = 'green', width = 1.2), 
+                         name = 'Exponential')
+
+# Add Gamma distribution curve
+fig_nr <- fig_nr %>% add_trace(x = x_vals, y = gamma_density, 
+                         type = 'scatter', mode = 'lines', 
+                         line = list(color = 'orange', width = 1.2), 
+                         name = 'Gamma')
+
+# Add Log-normal distribution curve
+fig_nr <- fig_nr %>% add_trace(x = x_vals, y = lognorm_density, 
+                         type = 'scatter', mode = 'lines', 
+                         line = list(color = 'brown', width = 1.2), 
+                         name = 'Log-normal')
+
+# Add Logistic distribution curve
+fig_nr <- fig_nr %>% add_trace(x = x_vals, y = logis_density, 
+                         type = 'scatter', mode = 'lines', 
+                         line = list(color = 'cyan', width = 1.2), 
+                         name = 'Logistic')
+
+# Add Normal distribution curve
+fig_nr <- fig_nr %>% add_trace(x = x_vals, y = norm_density, 
+                         type = 'scatter', mode = 'lines', 
+                         line = list(color = 'red', width = 1.2), 
+                         name = 'Normal')
+
+# Add Uniform distribution curve
+fig_nr <- fig_nr %>% add_trace(x = x_vals, y = unif_density, 
+                         type = 'scatter', mode = 'lines', 
+                         line = list(color = 'pink', width = 1.2), 
+                         name = 'Uniform')
+
+# Add Weibull distribution curve
+fig_nr <- fig_nr %>% add_trace(x = x_vals, y = weibull_density, 
+                         type = 'scatter', mode = 'lines', 
+                         line = list(color = 'magenta', width = 1.2), 
+                         name = 'Weibull')
+
+# Layout settings: titles, axis labels, and legend
+fig_nr <- fig_nr %>% layout(title = 'Histogram with Fitted Distributions for Non-Residents',
+                      xaxis = list(title = 'Number of Days at Hospital', 
+                                   range = c(0, NA),  # Ensure x-axis starts at 0
+                                   zeroline = TRUE),   # Ensure zero line is present
+                      yaxis = list(title = 'Density'),
+                      legend = list(title = list(text = 'Distributions')),
+                      barmode = 'overlay')
+
+# Show the plot
+fig_nr
+```
+
+Finally, we confirm our visual decision using the BIC and AIC of the models.
+
+```{r}
+fits_non_resident_patients_list <- list(
+  cauchy = fit_non_resident_patients_cauchy,
+  exp = fit_non_resident_patients_exp,
+  gamma = fit_non_resident_patients_gamma,
+  lnorm = fit_non_resident_patients_lnorm,
+  logis = fit_non_resident_patients_logis,
+  norm = fit_non_resident_patients_norm,
+  unif = fit_non_resident_patients_unif,
+  weibull = fit_non_resident_patients_weibull
+)
+
+best_non_resident_patients_models <- find_best_aic_bic(fits_non_resident_patients_list)
+
+cat("Best model by AIC:", best_non_resident_patients_models$best_aic_model, "with AIC =", best_non_resident_patients_models$min_aic, "\n")
+cat("Best model by BIC:", best_non_resident_patients_models$best_bic_model, "with BIC =", best_non_resident_patients_models$min_bic, "\n")
+```
+
+## Part d
+
+### Data Distribution Identification
+
+## Part e
+
+### Data Stories
